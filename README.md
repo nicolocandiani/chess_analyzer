@@ -37,6 +37,15 @@ Everything runs in a single Docker container. No account or API key is needed.
 - Drag any piece in any position to try your own idea. The coach evaluates it against the best move and tells you why.
 - Ask the engine to reply, undo moves, or step through the best line move by move.
 
+### Share a PDF with a friend
+Click **⤴ Share** in a review to create a PDF ([see a sample](docs/sample-review.pdf)):
+- a summary with accuracy, move labels, the final position, a short story of the game and the eval graph
+- **puzzles from the game**: positions where someone went wrong, for your friend to solve, with solutions at the end
+- **key moments**: board diagrams with arrows for the move played and the best move, plus the coach's explanations and tips
+- the full move list, and optionally your name, a personal note and a link to the interactive review
+
+You can **download** the PDF, or send it straight from your system's share sheet (Mail, Messages, WhatsApp…) where the browser supports sharing files.
+
 ### Profile insights
 ![Profile](docs/screenshots/profile.jpg)
 
@@ -45,8 +54,8 @@ Ratings, win rate by color and time control, rating trend, your most-played open
 ## Quick start
 
 ```bash
-git clone https://github.com/<you>/chess-game-review.git
-cd chess-game-review
+git clone https://github.com/nicolocandiani/chess_analyzer.git
+cd chess_analyzer
 docker compose up -d --build
 ```
 
@@ -87,6 +96,7 @@ chess.com public API ──► FastAPI backend ──► Stockfish (python-chess
                               │
                               ├─ analysis.py  evaluations, move labels, accuracy
                               ├─ coach.py     tactics detection, explanations, hints, live grading
+                              ├─ pdf_report.py  shareable PDF (diagrams, key moments, puzzles)
                               └─ chesscom.py  profiles, game archives, insights
                               ▼
                      static/ (vanilla JS, no build step)
@@ -122,6 +132,7 @@ chess.com public API ──► FastAPI backend ──► Stockfish (python-chess
 | `POST /api/analyze` `{pgn, depth}` | Start a review job; returns `job_id` and `key` |
 | `GET /api/jobs/{job_id}` | Job progress and result |
 | `GET /api/analysis/{key}` | A finished review |
+| `POST /api/analysis/{key}/pdf` `{perspective, sender, note, link, puzzles, moves}` | Shareable PDF of a review |
 | `POST /api/coach/position` `{fen}` | Legal moves, best move, hints |
 | `POST /api/coach/move` `{fen, uci}` | Grade and explain a move |
 | `POST /api/coach/line` `{fen, moves}` | Positions along a line of moves |
@@ -129,7 +140,8 @@ chess.com public API ──► FastAPI backend ──► Stockfish (python-chess
 ## Credits
 
 - [Stockfish](https://stockfishchess.org/), the chess engine (GPLv3; installed from Debian packages, not bundled in this repo)
-- [python-chess](https://github.com/niklasf/python-chess)
+- [python-chess](https://github.com/niklasf/python-chess) and [ReportLab](https://www.reportlab.com/) for the PDFs
+- [DejaVu fonts](https://dejavu-fonts.github.io/) for the chess diagrams
 - [lichess chess-openings](https://github.com/lichess-org/chess-openings) (CC0)
 - Game data from the [chess.com Published-Data API](https://www.chess.com/news/view/published-data-api)
 

@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DATA_DIR=/data
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends stockfish ca-certificates \
+    && apt-get install -y --no-install-recommends stockfish fonts-dejavu-core ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /srv

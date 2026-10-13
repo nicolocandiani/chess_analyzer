@@ -11,13 +11,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import chess
 
-from . import analysis, chesscom, coach
+from . import analysis, chesscom, coach, pdf_report
 
 ENGINE_THREADS = int(os.environ.get("ENGINE_THREADS", "2"))
 ENGINE_HASH_MB = int(os.environ.get("ENGINE_HASH_MB", "128"))
@@ -147,6 +147,28 @@ def job(job_id: str):
             raise HTTPException(404, "Unknown job")
         out = {k: v for k, v in j.items() if k not in ("key", "created")}
     return out
+
+
+class PdfRequest(BaseModel):
+    perspective: str | None = Field(None, pattern="^(white|black)$")
+    sender: str = Field("", max_length=60)
+    note: str = Field("", max_length=1000)
+    link: str | None = Field(None, max_length=300, pattern="^https?://")
+    puzzles: bool = True
+    moves: bool = True
+
+
+@app.post("/api/analysis/{key}/pdf")
+def analysis_pdf(key: str, req: PdfRequest):
+    """A shareable PDF of a finished review."""
+    if not re.fullmatch(r"[0-9a-f]{40}", key) or not _cache_path(key).exists():
+        raise HTTPException(404, "Analysis not found")
+    review = json.loads(_cache_path(key).read_text())
+    data = pdf_report.build_pdf(review, perspective=req.perspective, note=req.note, sender=req.sender,
+                                link=req.link, include_puzzles=req.puzzles, include_moves=req.moves)
+    name = pdf_report.filename(review)
+    return Response(data, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 # ------------------------------------------------------------------ coach

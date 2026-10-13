@@ -1043,6 +1043,91 @@ document.addEventListener("keydown", (e) => {
   if (map[e.key]) { e.preventDefault(); nav(map[e.key]); }
 });
 
+// ------------------------------------------------------------------ share as PDF
+const isLocalHost = () => /^(localhost|127\.|\[::1\]|0\.0\.0\.0)/.test(location.hostname);
+
+function reviewLink() {
+  const q = $("#share-perspective").value === "black" ? "?as=black" : "";
+  return `${location.origin}/#/review/${state.reviewKey}${q}`;
+}
+
+$("#share-btn").addEventListener("click", () => {
+  if (!state.reviewKey) return toast("This review can't be shared yet.");
+  $("#share-perspective").value = state.flipped ? "black" : "white";
+  $("#share-link").checked = !isLocalHost();
+  $("#share-link-note").textContent = isLocalHost()
+    ? "This server runs on localhost, so the link only works on this computer. The PDF works anywhere."
+    : "";
+  try { $("#share-sender").value = localStorage.getItem("share-sender") || ""; } catch {}
+  // Only offer the system share sheet where the browser can share files.
+  const probe = new File([""], "x.pdf", { type: "application/pdf" });
+  $("#share-send").classList.toggle("hidden", !(navigator.canShare && navigator.canShare({ files: [probe] })));
+  $("#share-dialog").showModal();
+});
+
+async function buildPdf() {
+  const sender = $("#share-sender").value.trim();
+  try { localStorage.setItem("share-sender", sender); } catch {}
+  const body = {
+    perspective: $("#share-perspective").value,
+    sender,
+    note: $("#share-note").value,
+    puzzles: $("#share-puzzles").checked,
+    moves: $("#share-moves").checked,
+    link: $("#share-link").checked ? reviewLink() : null,
+  };
+  const res = await fetch(`/api/analysis/${state.reviewKey}/pdf`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { msg = (await res.json()).detail || msg; } catch {}
+    throw new Error(typeof msg === "string" ? msg : "Invalid options");
+  }
+  const name = (res.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/)?.[1] || "chess-review.pdf";
+  return new File([await res.blob()], name, { type: "application/pdf" });
+}
+
+async function withBusy(btn, fn) {
+  const buttons = $$("#share-dialog button");
+  const label = btn.textContent;
+  buttons.forEach((b) => (b.disabled = true));
+  btn.textContent = "Creating PDF…";
+  try { await fn(); } catch (err) { if (err.name !== "AbortError") toast("Couldn't share: " + err.message); }
+  buttons.forEach((b) => (b.disabled = false));
+  btn.textContent = label;
+}
+
+$("#share-download").addEventListener("click", (e) => withBusy(e.currentTarget, async () => {
+  const file = await buildPdf();
+  const url = URL.createObjectURL(file);
+  const a = Object.assign(document.createElement("a"), { href: url, download: file.name });
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}));
+
+$("#share-send").addEventListener("click", (e) => withBusy(e.currentTarget, async () => {
+  const file = await buildPdf();
+  const r = state.review;
+  await navigator.share({
+    files: [file],
+    title: `Game review: ${r.white} vs ${r.black}`,
+    text: $("#share-note").value.trim() || `Check out this chess game review: ${r.white} vs ${r.black}`,
+  });
+  $("#share-dialog").close();
+}));
+
+$("#share-copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(reviewLink());
+    toast("Link copied to clipboard");
+  } catch {
+    prompt("Copy this link:", reviewLink());
+  }
+});
+
 // ------------------------------------------------------------------ init
 $("#legend-row").innerHTML = Object.keys(CLS).filter((c) => c !== "forced").map((c) => `<span class="legend-item">${icon(c)} ${CLS[c].label}</span>`).join("");
 route();

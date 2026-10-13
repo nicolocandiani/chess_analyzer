@@ -25,13 +25,19 @@ jobs:
           curl -sf localhost:8000/api/health | grep -q '"ok":true'
           curl -sf localhost:8000/ | grep -q "Game Review"
           # Review a short game end to end
-          JOB=$(curl -sf -X POST localhost:8000/api/analyze -H 'Content-Type: application/json' \
-            -d '{"pgn":"1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 4. Qxf7#","depth":8}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["job_id"])')
+          RESP=$(curl -sf -X POST localhost:8000/api/analyze -H 'Content-Type: application/json' \
+            -d '{"pgn":"1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 4. Qxf7#","depth":8}')
+          JOB=$(echo "$RESP" | python3 -c 'import json,sys;print(json.load(sys.stdin)["job_id"])')
+          KEY=$(echo "$RESP" | python3 -c 'import json,sys;print(json.load(sys.stdin)["key"])')
           for i in $(seq 1 30); do
             STATUS=$(curl -sf localhost:8000/api/jobs/$JOB | python3 -c 'import json,sys;print(json.load(sys.stdin)["status"])')
             [ "$STATUS" != running ] && break; sleep 1
           done
           test "$STATUS" = done
+          # The finished review exports to a PDF
+          curl -sf -X POST localhost:8000/api/analysis/$KEY/pdf -H 'Content-Type: application/json' \
+            -d '{"sender":"CI","note":"smoke test"}' -o review.pdf
+          head -c 5 review.pdf | grep -q '%PDF-'
           # The coach should call 3...Nf6 a blunder that allows mate
           curl -sf -X POST localhost:8000/api/coach/move -H 'Content-Type: application/json' \
             -d '{"fen":"r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3","uci":"g8f6"}' \

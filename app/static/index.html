@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Chess Game Review</title>
-  <link rel="stylesheet" href="/static/style.css?v=8">
+  <link rel="stylesheet" href="/static/style.css?v=9">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>♞</text></svg>">
 </head>
 <body>
@@ -105,6 +105,7 @@
           <div class="side-tabs">
             <button class="tab active" data-tab="summary">Review</button>
             <button class="tab" data-tab="moves">Moves</button>
+            <button class="share-btn ghost" id="share-btn" title="Share this review as a PDF">⤴ Share</button>
             <button class="back-btn ghost" id="back-btn">← Games</button>
           </div>
           <div class="feedback" id="feedback"></div>
@@ -136,8 +137,39 @@
     </form>
   </dialog>
 
+  <dialog id="share-dialog">
+    <form method="dialog" class="share-form">
+      <h3>Share this review</h3>
+      <p class="muted">Creates a PDF with the summary, key moments explained by the coach, puzzles from the game and the full move list.</p>
+      <div class="share-grid">
+        <label>Your name <input type="text" id="share-sender" maxlength="60" placeholder="optional"></label>
+        <label>Diagrams from
+          <select id="share-perspective">
+            <option value="white">White's side</option>
+            <option value="black">Black's side</option>
+          </select>
+        </label>
+      </div>
+      <label>Note for your friend
+        <textarea id="share-note" rows="3" maxlength="1000" placeholder="e.g. Look at move 26, what would you have played?"></textarea>
+      </label>
+      <div class="share-checks">
+        <label><input type="checkbox" id="share-puzzles" checked> Puzzles from the game</label>
+        <label><input type="checkbox" id="share-moves" checked> Full move list</label>
+        <label><input type="checkbox" id="share-link"> Link to the interactive review</label>
+      </div>
+      <p class="muted small" id="share-link-note"></p>
+      <div class="dialog-actions">
+        <button value="cancel" class="ghost" formnovalidate>Close</button>
+        <button type="button" class="ghost" id="share-copy">🔗 Copy link</button>
+        <button type="button" class="ghost" id="share-download">⬇ Download PDF</button>
+        <button type="button" id="share-send">⤴ Share…</button>
+      </div>
+    </form>
+  </dialog>
+
   <div id="toast" class="toast hidden"></div>
 </main>
-<script src="/static/app.js?v=8"></script>
+<script src="/static/app.js?v=9"></script>
 </body>
 </html>

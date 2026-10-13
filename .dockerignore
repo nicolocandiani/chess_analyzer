@@ -1,0 +1,11 @@
+__pycache__
+*.pyc
+.git
+.github
+.venv
+venv
+data
+docs
+app/openings.json
+*.md
+.DS_Store

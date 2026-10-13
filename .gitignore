@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Generated at build time / runtime
+app/openings.json
+data/
+
+# Local environment
+.env
+.DS_Store
+.idea/
+.vscode/
+.claude/

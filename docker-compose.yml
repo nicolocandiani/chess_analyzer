@@ -1,0 +1,18 @@
+services:
+  chess-analysis:
+    build: .
+    container_name: chess-analysis
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      ENGINE_THREADS: "${ENGINE_THREADS:-2}"
+      ENGINE_HASH_MB: "${ENGINE_HASH_MB:-128}"
+      ANALYSIS_WORKERS: "${ANALYSIS_WORKERS:-2}"
+      DEFAULT_DEPTH: "${DEFAULT_DEPTH:-16}"
+      COACH_DEPTH: "${COACH_DEPTH:-16}"
+    volumes:
+      - analysis-cache:/data
+    restart: unless-stopped
+
+volumes:
+  analysis-cache:

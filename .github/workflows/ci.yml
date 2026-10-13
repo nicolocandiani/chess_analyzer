@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t chess-analysis .
+
+      - name: Start container
+        run: |
+          docker run -d --name app -p 8000:8000 chess-analysis
+          for i in $(seq 1 30); do curl -sf localhost:8000/api/health && break; sleep 2; done
+
+      - name: Smoke test
+        run: |
+          set -e
+          curl -sf localhost:8000/api/health | grep -q '"ok":true'
+          curl -sf localhost:8000/ | grep -q "Game Review"
+          # Review a short game end to end
+          JOB=$(curl -sf -X POST localhost:8000/api/analyze -H 'Content-Type: application/json' \
+            -d '{"pgn":"1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 4. Qxf7#","depth":8}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["job_id"])')
+          for i in $(seq 1 30); do
+            STATUS=$(curl -sf localhost:8000/api/jobs/$JOB | python3 -c 'import json,sys;print(json.load(sys.stdin)["status"])')
+            [ "$STATUS" != running ] && break; sleep 1
+          done
+          test "$STATUS" = done
+          # The coach should call 3...Nf6 a blunder that allows mate
+          curl -sf -X POST localhost:8000/api/coach/move -H 'Content-Type: application/json' \
+            -d '{"fen":"r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3","uci":"g8f6"}' \
+            | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d["classification"]=="blunder",d;print(d["explanation"])'
+
+      - name: Logs on failure
+        if: failure()
+        run: docker logs app

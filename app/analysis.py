@@ -349,7 +349,7 @@ def build_review(game: chess.pgn.Game, positions: list[chess.Board], nodes: list
     _time_spent(moves_out, headers.get("TimeControl"))
 
     summary = summarize(moves_out)
-    return {
+    review = {
         "headers": headers,
         "white": headers.get("White"),
         "black": headers.get("Black"),
@@ -369,6 +369,17 @@ def build_review(game: chess.pgn.Game, positions: list[chess.Board], nodes: list
         "moves": moves_out,
         "summary": summary,
     }
+    add_legal_moves(review)
+    return review
+
+
+def add_legal_moves(review: dict) -> None:
+    """Attach legal moves to each position so the board can show move targets without a round trip."""
+    if "start_legal" not in review:
+        review["start_legal"] = [m.uci() for m in chess.Board(review["start_fen"]).legal_moves]
+    for m in review["moves"]:
+        if "legal" not in m:
+            m["legal"] = [mv.uci() for mv in chess.Board(m["fen"]).legal_moves]
 
 
 def _eco_name(url: str | None) -> str | None:

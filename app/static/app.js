@@ -349,6 +349,7 @@ function openReview(review, playerColor, key) {
   state.playerColor = playerColor;
   state.flipped = playerColor === "black";
   state.ply = 0;
+  seedLegal(review);
   leaveCoach();
   show("review");
   renderSummary();
@@ -435,36 +436,79 @@ function sqXY(sq) {
 const ARROW_COLORS = { best: "rgba(129,182,76,0.85)", engine: "rgba(92,139,176,0.8)", bad: "rgba(202,52,49,0.75)" };
 const arrow = (uci, kind) => ({ uci, color: ARROW_COLORS[kind] });
 
-// view: {fen, last:{from,to,cls}, check, arrows, selected, targets, hintSq}
-function drawBoard(view) {
-  state.boardView = view;
-  const { board, turn } = parseFen(view.fen);
-  const checkSq = view.check ? Object.keys(board).find((s) => board[s] === (turn === "w" ? "K" : "k")) : null;
-  const last = view.last;
-  let html = "";
+// view: {fen, last:{from,to,cls}, check, arrows, selected, targets, hintSq, animate}
+// The 64 squares are created once per orientation; each redraw only touches squares whose
+// content changed, and a piece that just moved slides into place.
+let squareEls = null;
+
+function buildSquares() {
+  const boardEl = $("#board");
+  boardEl.innerHTML = "";
+  squareEls = { flipped: state.flipped, map: new Map() };
   for (let row = 0; row < 8; row++) {
     for (let col = 0; col < 8; col++) {
       const f = state.flipped ? 7 - col : col, r = state.flipped ? row : 7 - row;
       const sq = "abcdefgh"[f] + (r + 1);
-      const light = (f + r) % 2 === 1;
-      const p = board[sq];
-      const hl = last && (sq === last.from || sq === last.to);
-      const cls = ["sq", light ? "l" : "d", hl && "hl", hl && BAD.has(last.cls) && "cls-bad", sq === checkSq && "check",
-        sq === view.selected && "sel", sq === view.hintSq && "hint"].filter(Boolean).join(" ");
-      html += `<div class="${cls}" data-sq="${sq}">`;
-      if (col === 0) html += `<span class="coord rank">${r + 1}</span>`;
-      if (row === 7) html += `<span class="coord file">${"abcdefgh"[f]}</span>`;
-      if (p) html += `<span class="piece ${p === p.toUpperCase() ? "w" : "b"}">${GLYPH[p.toLowerCase()]}︎</span>`;
-      if (view.targets && view.targets.includes(sq)) html += `<span class="${p ? "cap-ring" : "dot"}"></span>`;
-      if (last && last.cls && sq === last.to) html += icon(last.cls, "badge");
-      html += `</div>`;
+      const el = document.createElement("div");
+      el.dataset.sq = sq;
+      el._base = `sq ${(f + r) % 2 === 1 ? "l" : "d"}`;
+      el._coords = (col === 0 ? `<span class="coord rank">${r + 1}</span>` : "") + (row === 7 ? `<span class="coord file">${"abcdefgh"[f]}</span>` : "");
+      el._sig = null;
+      boardEl.appendChild(el);
+      squareEls.map.set(sq, el);
     }
   }
-  $("#board").innerHTML = html;
+}
+
+function drawBoard(view) {
+  const prev = state.boardView;
+  state.boardView = view;
+  if (!squareEls || squareEls.flipped !== state.flipped || !$("#board").firstChild) buildSquares();
+  const { board, turn } = parseFen(view.fen);
+  const checkSq = view.check ? Object.keys(board).find((s) => board[s] === (turn === "w" ? "K" : "k")) : null;
+  const last = view.last;
+
+  // Slide the moved piece if this position follows from the previous one by `last`.
+  let slide = null;
+  if (view.animate !== false && prev && prev.fen !== view.fen && last) {
+    const before = parseFen(prev.fen).board;
+    const moved = before[last.from];
+    if (moved && !board[last.from] && board[last.to] && (board[last.to] === moved || moved.toLowerCase() === "p")) slide = last;
+  }
+
+  for (const [sq, el] of squareEls.map) {
+    const p = board[sq];
+    const hl = last && (sq === last.from || sq === last.to);
+    const cls = [el._base, hl && "hl", hl && BAD.has(last.cls) && "cls-bad", sq === checkSq && "check",
+      sq === view.selected && "sel", sq === view.hintSq && "hint"].filter(Boolean).join(" ");
+    const target = view.targets && view.targets.includes(sq) ? (p ? "cap" : "dot") : "";
+    const badge = last && last.cls && sq === last.to ? last.cls : "";
+    const sig = `${p || ""}|${target}|${badge}`;
+    if (el.className !== cls) el.className = cls;
+    if (el._sig === sig) continue;
+    el._sig = sig;
+    el.innerHTML = el._coords
+      + (p ? `<span class="piece ${p === p.toUpperCase() ? "w" : "b"}">${GLYPH[p.toLowerCase()]}\uFE0E</span>` : "")
+      + (target === "dot" ? `<span class="dot"></span>` : target === "cap" ? `<span class="cap-ring"></span>` : "")
+      + (badge ? icon(badge, "badge") : "");
+  }
+
+  if (slide) {
+    const fromEl = squareEls.map.get(slide.from), toEl = squareEls.map.get(slide.to);
+    const piece = toEl.querySelector(".piece");
+    if (piece && piece.animate) {
+      const a = fromEl.getBoundingClientRect(), b = toEl.getBoundingClientRect();
+      piece.animate([{ transform: `translate(${a.left - b.left}px, ${a.top - b.top}px)` }, { transform: "translate(0, 0)" }],
+        { duration: 170, easing: "cubic-bezier(.2,.7,.3,1)" });
+    }
+  }
   drawArrows(view.arrows || []);
 }
 
 function drawArrows(list) {
+  const sig = list.map((a) => a.uci + a.color).join(",") + (state.flipped ? "f" : "");
+  if (drawArrows._sig === sig) return;
+  drawArrows._sig = sig;
   const defs = list.map((a, i) => `<marker id="ah${i}" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${a.color}"/></marker>`).join("");
   const lines = list.map((a, i) => {
     const [x1, y1] = sqXY(a.uci.slice(0, 2)), [x2, y2] = sqXY(a.uci.slice(2, 4));
@@ -524,6 +568,11 @@ const actions = (btns) => `<div class="coach-actions">${btns.filter(Boolean).map
 function renderFeedback(mv) {
   const r = state.review;
   $(".side-card").classList.remove("coach-mode");
+  clearTimeout(renderFeedback._warm);
+  if (mv && BAD.has(mv.classification) && mv.best_move) {
+    // Pausing on a mistake: get its retry ready in case the user clicks "Retry".
+    renderFeedback._warm = setTimeout(() => prefetch([{ fen: mv.fen_before, moves: [mv.best_move] }]), 500);
+  }
   if (!mv) {
     $("#feedback").innerHTML = coachSays(`<div class="fb-head">Starting position <span class="eval-chip ${evalNum(r.start_eval) < 0 ? "neg" : ""}">${esc(r.start_eval_text)}</span></div>
       <div class="fb-line">Engine line: <span class="line-moves">${esc(r.start_line.join(" "))}</span></div>
@@ -582,6 +631,31 @@ $("#feedback").addEventListener("click", (e) => {
 
 // ------------------------------------------------------------------ coach: board interaction
 const legalCache = new Map();
+
+function seedLegal(review) {
+  if (review.start_legal) legalCache.set(review.start_fen, review.start_legal);
+  for (const m of review.moves) if (m.legal) legalCache.set(m.fen, m.legal);
+}
+
+// Ask the server to analyse positions the user is likely to try next, while they think.
+function prefetch(items) {
+  items = items.filter((it) => it && it.fen);
+  if (!items.length) return;
+  fetch("/api/coach/prefetch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items }) }).catch(() => {});
+}
+
+// A retry of the move actually played needs no engine: the review already has everything.
+function resFromReview(mv) {
+  return {
+    san: mv.san, uci: mv.uci, from: mv.from, to: mv.to, classification: mv.classification,
+    correct: false, explanation: mv.explanation, tip: mv.tip,
+    best: { uci: mv.best_move, san: mv.best_san, eval_text: mv.best_eval_text, line: mv.best_line },
+    reply: { uci: mv.next_best, san: mv.next_line[0] },
+    after: { fen: mv.fen, eval: mv.eval, eval_text: mv.eval_text, check: mv.check, legal: mv.legal, game_over: !mv.next_best,
+             best: { uci: mv.next_best, san: mv.next_line[0], line: mv.next_line } },
+  };
+}
+
 async function legalMoves(fen) {
   if (!legalCache.has(fen)) {
     const pos = await api("/api/coach/position", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fen, engine: false }) });
@@ -652,11 +726,11 @@ window.addEventListener("pointerup", (e) => {
   d.ghost.remove();
   const to = document.elementFromPoint(e.clientX, e.clientY)?.closest(".sq")?.dataset.sq;
   const view = state.boardView;
-  if (to && to !== d.from && view.targets && view.targets.includes(to)) playMove(d.from + to);
+  if (to && to !== d.from && view.targets && view.targets.includes(to)) playMove(d.from + to, { animate: false });
   else drawBoard(view);
 });
 
-async function playMove(uci) {
+async function playMove(uci, { animate = true } = {}) {
   const view = state.boardView;
   const fen = view.fen;
   const from = uci.slice(0, 2), to = uci.slice(2, 4);
@@ -667,21 +741,31 @@ async function playMove(uci) {
     state.coach = { history: [{ fen, res: null }] };
   }
   const c = state.coach;
-  // Optimistic redraw while the coach thinks.
+  if (state.mode === "retry" && c.mv && uci.slice(0, 4) === c.mv.uci.slice(0, 4)) {
+    onRetryResult(resFromReview(c.mv), animate);
+    return;
+  }
+  // Optimistic redraw while the coach thinks; the "thinking" note only appears if it takes a while.
   const opt = { ...board };
   opt[to] = opt[from];
   delete opt[from];
-  drawBoard({ fen: boardToFen(opt, fen), last: { from, to }, arrows: [] });
+  drawBoard({ fen: boardToFen(opt, fen), last: { from, to }, arrows: [], animate });
   c.busy = true;
-  renderCoachPanel();
+  const thinking = setTimeout(() => { if (c.busy && state.coach === c) renderCoachPanel(); }, 250);
   try {
     const res = await api("/api/coach/move", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fen, uci }) });
     legalCache.set(res.after.fen, res.after.legal);
+    clearTimeout(thinking);
     c.busy = false;
     if (state.coach !== c) return;
     if (state.mode === "retry") onRetryResult(res);
-    else { c.history.push({ fen: res.after.fen, res }); renderExplore(); }
+    else {
+      c.history.push({ fen: res.after.fen, res });
+      renderExplore();
+      if (!res.after.game_over) prefetch([{ fen: res.after.fen, moves: res.after.best.uci ? [res.after.best.uci] : [] }]);
+    }
   } catch (err) {
+    clearTimeout(thinking);
     c.busy = false;
     toast(err.message);
     drawBoard({ ...view, selected: null, targets: null });
@@ -716,11 +800,25 @@ function startRetry(ply, practice = null) {
   const prevFlipped = state.coach && state.coach.prevFlipped != null ? state.coach.prevFlipped : state.flipped;
   state.coach = { ply, mv, attempts: 0, hint: 0, status: "await", res: null, practice, prevFlipped };
   state.flipped = mv.color === "black";
+  if (!practice) prefetch([{ fen: mv.fen_before, moves: [mv.best_move] }]);
   renderRetry();
 }
 
-function onRetryResult(res) {
+// The review's best move is the solution we show, so it always counts as solved, even if the
+// live coach (searching at a different depth) slightly prefers another move.
+function asSolution(res, mv) {
+  if (res.uci.slice(0, 4) === (mv.best_move || "").slice(0, 4) && !res.correct) {
+    res.correct = true;
+    res.classification = "best";
+    res.explanation = [`${res.san} is the best move.`, ...res.explanation.slice(1).filter((n) => !/^(Slightly stronger|Better) was/.test(n))];
+  }
+  return res;
+}
+
+function onRetryResult(res, animate = true) {
   const c = state.coach;
+  asSolution(res, c.mv);
+  c.animate = animate;
   c.res = res;
   c.attempts++;
   c.status = res.correct ? "correct" : res.classification === "good" ? "good" : "wrong";
@@ -734,7 +832,7 @@ async function showSolution() {
   renderRetry();
   try {
     const res = await api("/api/coach/move", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fen: c.mv.fen_before, uci: c.mv.best_move }) });
-    c.res = res;
+    c.res = asSolution(res, c.mv);
     c.status = "revealed";
     recordPractice("revealed");
   } catch (err) { toast(err.message); }
@@ -764,7 +862,7 @@ function renderRetry() {
   let html = practiceHeader(), mood = "";
 
   if (c.status === "await") {
-    drawBoard({ fen: mv.fen_before, last: prev && { from: prev.from, to: prev.to }, check: prev ? prev.check : false, arrows: [], hintSq: c.hint >= 1 && mv.hint ? mv.hint.square : null });
+    if (!c.busy) drawBoard({ fen: mv.fen_before, last: prev && { from: prev.from, to: prev.to }, check: prev ? prev.check : false, arrows: [], hintSq: c.hint >= 1 && mv.hint ? mv.hint.square : null });
     renderEvalBar(mv.eval_before);
     const hints = [];
     if (c.hint >= 1 && mv.hint) hints.push(mv.hint.piece);
@@ -783,7 +881,8 @@ function renderRetry() {
     const res = c.res;
     // Never draw the solution while the user is still trying: a wrong answer shows the refutation.
     const arrows = !res.reply.uci || c.status === "good" ? [] : [arrow(res.reply.uci, c.status === "wrong" ? "bad" : "engine")];
-    drawBoard({ fen: res.after.fen, last: { from: res.from, to: res.to, cls: res.classification }, check: res.after.check, arrows });
+    drawBoard({ fen: res.after.fen, last: { from: res.from, to: res.to, cls: res.classification }, check: res.after.check, arrows, animate: c.animate !== false });
+    c.animate = true;
     renderEvalBar(res.after.eval);
     const last = c.practice && c.practice.idx === c.practice.queue.length - 1;
     const nextBtn = c.practice ? ["next", last ? "Finish ✓" : "Next mistake →", true] : ["exit", "Back to review", true];
@@ -817,6 +916,7 @@ function practiceColor() { return state.playerColor || (state.flipped ? "black" 
 function startPractice(color) {
   const queue = state.review.moves.filter((m) => m.color === color && BAD.has(m.classification) && m.best_move).map((m) => m.ply);
   if (!queue.length) return toast(`No mistakes to practice for ${sideName(color)}. Well played!`);
+  prefetch(queue.map((ply) => { const m = state.review.moves[ply - 1]; return { fen: m.fen_before, moves: [m.best_move] }; }));
   startRetry(queue[0], { color, queue, idx: 0, results: {} });
 }
 
@@ -877,6 +977,7 @@ async function startLine(fen, moves, title, mistake = null) {
   try {
     const steps = await api("/api/coach/line", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fen, moves }) });
     if (!steps.length) return toast("No line to show.");
+    steps.forEach((st) => st.legal && legalCache.set(st.fen, st.legal));
     state.mode = "line";
     state.coach = { fen0: fen, steps, idx: 1, title, mistake, prevFlipped: state.coach ? state.coach.prevFlipped : null };
     renderLine();
@@ -954,24 +1055,34 @@ function renderMoveList() {
 }
 
 // --- eval graph
+// The graph is rebuilt only when the review or its size changes; moving through the game just
+// slides the cursor.
 function renderGraph() {
   const r = state.review;
   const svg = $("#graph");
   const W = svg.clientWidth || 400, H = svg.clientHeight || 90;
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  const pts = [r.start_eval, ...r.moves.map((m) => m.eval)].map((e) => (e.mate != null ? (evalNum(e) > 0 ? 100 : 0) : winPct(e.cp)));
-  const n = pts.length - 1 || 1;
-  const x = (i) => (i / n) * W, y = (p) => H - (p / 100) * H;
-  const area = `M0,${H} ` + pts.map((p, i) => `L${x(i).toFixed(1)},${y(p).toFixed(1)}`).join(" ") + ` L${W},${H} Z`;
-  const dots = r.moves.map((m, i) => {
-    if (!["brilliant", "great", "mistake", "miss", "blunder"].includes(m.classification)) return "";
-    return `<circle cx="${x(i + 1)}" cy="${y(pts[i + 1])}" r="4" fill="var(--c-${m.classification})" stroke="#1f1e1b" stroke-width="1.5"/>`;
-  }).join("");
-  svg.innerHTML = `<rect width="${W}" height="${H}" fill="#403d39"/>
-    <path d="${area}" fill="#fff"/>
-    <line x1="0" x2="${W}" y1="${H / 2}" y2="${H / 2}" stroke="#888" stroke-dasharray="2 3" stroke-width="1"/>
-    <line x1="${x(state.ply)}" x2="${x(state.ply)}" y1="0" y2="${H}" stroke="var(--accent)" stroke-width="2"/>
-    ${dots}`;
+  const n = r.moves.length || 1;
+  const sig = `${state.reviewKey}|${W}|${H}|${n}`;
+  if (svg._sig !== sig) {
+    svg._sig = sig;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const pts = [r.start_eval, ...r.moves.map((m) => m.eval)].map((e) => (e.mate != null ? (evalNum(e) > 0 ? 100 : 0) : winPct(e.cp)));
+    const x = (i) => (i / n) * W, y = (p) => H - (p / 100) * H;
+    const area = `M0,${H} ` + pts.map((p, i) => `L${x(i).toFixed(1)},${y(p).toFixed(1)}`).join(" ") + ` L${W},${H} Z`;
+    const dots = r.moves.map((m, i) => {
+      if (!["brilliant", "great", "mistake", "miss", "blunder"].includes(m.classification)) return "";
+      return `<circle cx="${x(i + 1)}" cy="${y(pts[i + 1])}" r="4" fill="var(--c-${m.classification})" stroke="#1f1e1b" stroke-width="1.5"/>`;
+    }).join("");
+    svg.innerHTML = `<rect width="${W}" height="${H}" fill="#403d39"/>
+      <path d="${area}" fill="#fff"/>
+      <line x1="0" x2="${W}" y1="${H / 2}" y2="${H / 2}" stroke="#888" stroke-dasharray="2 3" stroke-width="1"/>
+      <line id="graph-cursor" x1="0" x2="0" y1="0" y2="${H}" stroke="var(--accent)" stroke-width="2"/>
+      ${dots}`;
+  }
+  const cx = (state.ply / n) * W;
+  const cursor = svg.querySelector("#graph-cursor");
+  cursor.setAttribute("x1", cx);
+  cursor.setAttribute("x2", cx);
 }
 
 $("#graph").addEventListener("click", (e) => {

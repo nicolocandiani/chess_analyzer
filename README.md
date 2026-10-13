@@ -75,6 +75,8 @@ Copy `.env.example` to `.env` to change the defaults:
 | `ANALYSIS_WORKERS` | 2 | Games analyzed in parallel |
 | `DEFAULT_DEPTH` | 16 | Review depth when the client doesn't send one |
 | `COACH_DEPTH` | 16 | Depth used to grade moves you try with the coach |
+| `COACH_TIME` | 1.5 | Max seconds per coach search (keeps the coach responsive) |
+| `COACH_ENGINES` | 2 | Stockfish processes for the coach; positions you're likely to try are analyzed in the background |
 
 Analysis takes about 1 second per position at depth 16 with 2 threads. Pick **depth 12** in the header for quick reviews, or raise `ENGINE_THREADS` if you have spare cores. Finished reviews are cached in the `analysis-cache` volume, so reopening a game is instant.
 

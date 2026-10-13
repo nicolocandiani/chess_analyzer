@@ -24,6 +24,8 @@ ENGINE_HASH_MB = int(os.environ.get("ENGINE_HASH_MB", "128"))
 DEFAULT_DEPTH = int(os.environ.get("DEFAULT_DEPTH", "16"))
 MAX_DEPTH = int(os.environ.get("MAX_DEPTH", "24"))
 COACH_DEPTH = int(os.environ.get("COACH_DEPTH", "16"))
+COACH_ENGINES = int(os.environ.get("COACH_ENGINES", "2"))
+COACH_TIME = float(os.environ.get("COACH_TIME", "1.5"))
 # Bump when the review format changes so stale cached reviews are recomputed.
 CACHE_VERSION = "7"
 DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data"))
@@ -88,6 +90,12 @@ def _cache_path(key: str) -> Path:
     return CACHE_DIR / f"{key}.json"
 
 
+def _load_review(key: str) -> dict:
+    review = json.loads(_cache_path(key).read_text())
+    analysis.add_legal_moves(review)  # reviews cached before legal moves were stored
+    return review
+
+
 def _run_job(job_id: str, pgn: str, depth: int, key: str):
     def progress(done: int, total: int):
         with jobs_lock:
@@ -114,7 +122,7 @@ def analyze(req: AnalyzeRequest):
     if cached.exists():
         with jobs_lock:
             jobs[job_id] = {"status": "done", "progress": 1, "total": 1, "created": time.time(),
-                            "result": json.loads(cached.read_text())}
+                            "result": _load_review(key)}
         return {"job_id": job_id, "key": key, "cached": True}
 
     with jobs_lock:
@@ -136,7 +144,7 @@ def saved_analysis(key: str):
     """A finished review by its cache key; powers shareable #/review/<key> links."""
     if not re.fullmatch(r"[0-9a-f]{40}", key) or not _cache_path(key).exists():
         raise HTTPException(404, "Analysis not found")
-    return FileResponse(_cache_path(key), media_type="application/json")
+    return _load_review(key)
 
 
 @app.get("/api/jobs/{job_id}")
@@ -173,7 +181,14 @@ def analysis_pdf(key: str, req: PdfRequest):
 
 # ------------------------------------------------------------------ coach
 
-coach_engine = coach.CoachEngine(COACH_DEPTH, ENGINE_THREADS, ENGINE_HASH_MB)
+coach_pool = ThreadPoolExecutor(max_workers=4)
+coach_engine = coach.CoachEngine(COACH_DEPTH, ENGINE_THREADS, ENGINE_HASH_MB, engines=COACH_ENGINES,
+                                 time_limit=COACH_TIME)
+
+
+@app.on_event("startup")
+def _warm_engines():
+    coach_engine.warm_up()
 
 
 class PositionRequest(BaseModel):
@@ -211,8 +226,8 @@ def _line_info(board: chess.Board, line: dict) -> dict:
     }
 
 
-def _position(board: chess.Board) -> dict:
-    lines = coach_engine.analyse(board, 2)
+def _position(board: chess.Board, multipv: int = 2) -> dict:
+    lines = coach_engine.analyse(board, multipv)
     best = lines[0]
     return {
         "fen": board.fen(),
@@ -250,11 +265,14 @@ def coach_move(req: MoveRequest):
     if not board.is_legal(move):
         raise HTTPException(400, "Illegal move")
 
-    before_lines = coach_engine.analyse(board, 2)
     after = board.copy()
     after.push(move)
-    after_pos = _position(after)
-    after_line = coach_engine.analyse(after, 2)[0]
+    # The searches before and after the move are independent: run them on two engines at once.
+    before_future = coach_pool.submit(coach_engine.analyse, board, 2)
+    # One line is enough after the move: it gives the evaluation and the opponent's best reply.
+    after_pos = _position(after, multipv=1)
+    after_line = coach_engine.analyse(after, 1)[0]
+    before_lines = before_future.result()
     reply_pv = after_line["pv"]
     book = analysis.openings()
     book_entry = book.get(after.epd()) if board.epd() in book or board.fullmove_number == 1 else None
@@ -281,6 +299,36 @@ def coach_move(req: MoveRequest):
     }
 
 
+class PrefetchItem(PositionRequest):
+    moves: list[str] = Field(default_factory=list, max_length=4)
+
+
+class PrefetchRequest(BaseModel):
+    items: list[PrefetchItem] = Field(..., max_length=30)
+
+
+@app.post("/api/coach/prefetch")
+def coach_prefetch(req: PrefetchRequest):
+    """Warm the engine cache for positions the user is about to try (e.g. upcoming practice puzzles)."""
+    jobs = []
+    for item in req.items:
+        try:
+            board = _board(item.fen)
+        except HTTPException:
+            continue
+        moves = []
+        for u in item.moves:
+            try:
+                m = chess.Move.from_uci(u)
+            except ValueError:
+                continue
+            if board.is_legal(m):
+                moves.append(m)
+        jobs.append((board, moves))
+    coach_engine.prefetch(jobs)
+    return {"queued": len(jobs)}
+
+
 @app.post("/api/coach/line")
 def coach_line(req: LineRequest):
     """Positions along a line of SAN or UCI moves (for stepping through engine lines)."""
@@ -301,6 +349,7 @@ def coach_line(req: LineRequest):
         board.push(move)
         out[-1]["fen"] = board.fen()
         out[-1]["check"] = board.is_check()
+        out[-1]["legal"] = [m.uci() for m in board.legal_moves]
     return out
 
 

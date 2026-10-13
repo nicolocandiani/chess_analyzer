@@ -6,8 +6,10 @@ coach can say *why* a move is good or bad instead of only quoting an evaluation.
 """
 from __future__ import annotations
 
+import queue
 import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 
 import chess
 import chess.engine
@@ -499,43 +501,145 @@ def explain_move(before: chess.Board, move: chess.Move, cls: str, best_line: dic
 # ---------------------------------------------------------------- live coach engine
 
 class CoachEngine:
-    """A single long-lived Stockfish for interactive coaching, with a small position cache."""
+    """A small pool of long-lived Stockfish processes for interactive coaching.
 
-    def __init__(self, depth: int, threads: int, hash_mb: int, cache_size: int = 2000):
-        self.depth = depth
-        self.threads = threads
-        self.hash_mb = hash_mb
-        self.lock = threading.Lock()
-        self.engine: chess.engine.SimpleEngine | None = None
+    - Results are cached per position; a cached multi-line result also answers single-line requests.
+    - Concurrent requests for the same position share one search instead of running it twice.
+    - Background (prefetch) searches only use an idle engine, so they never delay the user.
+    """
+
+    def __init__(self, depth: int, threads: int, hash_mb: int, engines: int = 2, time_limit: float = 1.5,
+                 cache_size: int = 5000):
+        self.depth, self.threads, self.hash_mb = depth, threads, hash_mb
+        self.time_limit = time_limit
+        self.size = max(1, engines)
+        self.idle: queue.Queue[chess.engine.SimpleEngine] = queue.Queue()
+        self.started = 0
+        self.lock = threading.Lock()  # guards cache, inflight and started
         self.cache: OrderedDict[tuple, list[dict]] = OrderedDict()
+        self.inflight: dict[tuple, threading.Event] = {}
         self.cache_size = cache_size
+        self.prefetcher = ThreadPoolExecutor(max_workers=self.size)
 
-    def _start(self):
-        self.engine = chess.engine.SimpleEngine.popen_uci(stockfish_path())
-        self.engine.configure({"Threads": self.threads, "Hash": self.hash_mb})
+    # -- engine pool
+    def _acquire(self, block: bool) -> chess.engine.SimpleEngine | None:
+        try:
+            return self.idle.get_nowait()
+        except queue.Empty:
+            pass
+        with self.lock:
+            spawn = self.started < self.size
+            if spawn:
+                self.started += 1
+        if spawn:
+            try:
+                eng = chess.engine.SimpleEngine.popen_uci(stockfish_path())
+                eng.configure({"Threads": self.threads, "Hash": self.hash_mb})
+                return eng
+            except Exception:
+                with self.lock:
+                    self.started -= 1
+                raise
+        return self.idle.get() if block else None
 
-    def analyse(self, board: chess.Board, multipv: int = 2) -> list[dict]:
+    def _release(self, eng: chess.engine.SimpleEngine | None):
+        if eng is not None:
+            self.idle.put(eng)
+        else:
+            with self.lock:
+                self.started -= 1
+
+    # -- cache
+    def _cached(self, fen: str, multipv: int) -> list[dict] | None:
+        for m in range(multipv, 4):
+            hit = self.cache.get((fen, m))
+            if hit is not None:
+                self.cache.move_to_end((fen, m))
+                return hit[:multipv]
+        return None
+
+    def analyse(self, board: chess.Board, multipv: int = 2, background: bool = False) -> list[dict] | None:
+        """Engine lines for `board`. In background mode returns None instead of waiting for an engine."""
         if board.is_game_over(claim_draw=False):
             return [{"eval": terminal_eval(board), "pv": []}]
-        multipv = min(multipv, board.legal_moves.count())
-        key = (board.fen(), multipv)
-        with self.lock:
-            if key in self.cache:
-                self.cache.move_to_end(key)
-                return self.cache[key]
-            for attempt in range(2):
-                try:
-                    if self.engine is None:
-                        self._start()
-                    infos = self.engine.analyse(board, chess.engine.Limit(depth=self.depth, time=3), multipv=multipv)
+        multipv = max(1, min(multipv, board.legal_moves.count()))
+        fen = board.fen()
+        key = (fen, multipv)
+        while True:
+            with self.lock:
+                hit = self._cached(fen, multipv)
+                if hit is not None:
+                    return hit
+                pending = self.inflight.get(key) or (self.inflight.get((fen, 2)) if multipv == 1 else None)
+                if pending is None:
+                    pending = self.inflight[key] = threading.Event()
                     break
-                except (chess.engine.EngineError, chess.engine.EngineTerminatedError):
-                    self.engine = None
-                    if attempt:
-                        raise
+            if background:
+                return None
+            pending.wait(timeout=30)  # someone else is searching this position: reuse their result
+
+        try:
+            eng = self._acquire(block=not background)
+            if eng is None:
+                return None
+            try:
+                infos = eng.analyse(board, chess.engine.Limit(depth=self.depth, time=self.time_limit), multipv=multipv)
+            except (chess.engine.EngineError, chess.engine.EngineTerminatedError):
+                try:
+                    eng.quit()
+                except Exception:
+                    pass
+                eng = None
+                raise
+            finally:
+                self._release(eng)
             out = [{"eval": score_to_dict(i["score"]), "pv": i["pv"]} for i in infos if "score" in i and i.get("pv")]
             out = out or [{"eval": {"cp": 0, "mate": None}, "pv": []}]
-            self.cache[key] = out
-            if len(self.cache) > self.cache_size:
-                self.cache.popitem(last=False)
+            with self.lock:
+                self.cache[key] = out
+                while len(self.cache) > self.cache_size:
+                    self.cache.popitem(last=False)
             return out
+        finally:
+            with self.lock:
+                self.inflight.pop(key, None)
+            pending.set()
+
+    def warm_up(self) -> None:
+        """Start the engine processes ahead of the first request."""
+        def run():
+            engines = []
+            try:
+                for _ in range(self.size):
+                    eng = self._acquire(block=False)
+                    if eng is None:
+                        break
+                    eng.ping()
+                    engines.append(eng)
+            except Exception:
+                pass
+            for eng in engines:
+                self._release(eng)
+        self.prefetcher.submit(run)
+
+    def prefetch(self, jobs: list[tuple[chess.Board, list[chess.Move]]]) -> None:
+        """Warm the cache for positions the user is likely to ask about next (runs in the background)."""
+        def background(board: chess.Board, multipv: int) -> None:
+            # Yield to the user: only search on an idle engine, retrying for a few seconds.
+            for _ in range(40):
+                if self.analyse(board, multipv, background=True) is not None:
+                    return
+                threading.Event().wait(0.25)
+
+        def run(board: chess.Board, moves: list[chess.Move]) -> None:
+            try:
+                for mv in moves:
+                    after = board.copy(stack=False)
+                    after.push(mv)
+                    background(after, 1)
+                background(board, 2)
+            except Exception:
+                pass
+
+        for board, moves in jobs:
+            self.prefetcher.submit(run, board, moves)

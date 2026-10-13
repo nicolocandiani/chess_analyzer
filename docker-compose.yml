@@ -10,6 +10,8 @@ services:
       ANALYSIS_WORKERS: "${ANALYSIS_WORKERS:-2}"
       DEFAULT_DEPTH: "${DEFAULT_DEPTH:-16}"
       COACH_DEPTH: "${COACH_DEPTH:-16}"
+      COACH_ENGINES: "${COACH_ENGINES:-2}"
+      COACH_TIME: "${COACH_TIME:-1.5}"
     volumes:
       - analysis-cache:/data
     restart: unless-stopped
